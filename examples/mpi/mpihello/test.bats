@@ -11,6 +11,22 @@ count_ranks () {
     | sed -r 's/^.+ ([0-9]+) ranks.+$/\1/'
 }
 
+@test "$EXAMPLE_TAG/MPI version" {
+    run ch-run "$IMG" -- /hello/hello
+    echo "$output"
+    [[ $status -eq 0 ]]
+    if [[ $CHTEST_MPI = openmpi ]]; then
+        [[ $output = *'Open MPI'* ]]
+    else
+        [[ $CHTEST_MPI = mpich ]]
+        if [[ $CHTEST_CRAY ]]; then
+            [[ $output = *'CRAY MPICH'* ]]
+        else
+            [[ $output = *'MPICH Version:'* ]]
+        fi
+    fi
+}
+
 @test "$EXAMPLE_TAG/serial" {
     # This seems to start up the MPI infrastructure (daemons, etc.) within the
     # guest even though there's no mpirun.
@@ -23,6 +39,7 @@ count_ranks () {
 }
 
 @test "$EXAMPLE_TAG/guest starts ranks" {
+    [[ $CHTEST_CRAY && $CHTEST_MPI = mpich ]] && skip "issue #255"
     # shellcheck disable=SC2086
     run ch-run "$IMG" -- mpirun $CHTEST_MPIRUN_NP /hello/hello
     echo "$output"
@@ -50,4 +67,12 @@ count_ranks () {
     [[ $rank_ct -eq "$CHTEST_CORES_TOTAL" ]]
     [[ $output = *'0: send/receive ok'* ]]
     [[ $output = *'0: finalize ok'* ]]
+}
+
+@test "$EXAMPLE_TAG/Cray bind mounts" {
+    [[ $CHTEST_CRAY ]] || skip 'host is not a Cray'
+    [[ $CHTEST_MPI = openmpi ]] && skip 'OpenMPI unsupported on Cray; issue #180'
+
+    ch-run "$IMG" -- mount | grep -F /var/opt/cray/alps/spool
+    ch-run "$IMG" -- mount | grep -F /var/opt/cray/hugetlbfs
 }

@@ -2,17 +2,19 @@ load ../common
 
 fromhost_clean () {
     [[ $1 ]]
-    for file in {mnt,usr/bin}/sotest \
+    for file in {lib,mnt,usr/bin}/sotest \
                 {lib,mnt,usr/lib,usr/local/lib}/libsotest.so.1{.0,} \
                 /usr/local/cuda-9.1/targets/x86_64-linux/lib/libsotest.so.1{.0,} \
                 /mnt/sotest.c \
                 /etc/ld.so.cache ; do
         rm -f "$1/$file"
     done
+    ch-run -w "$1" -- /sbin/ldconfig  # restore default cache
     fromhost_clean_p "$1"
 }
 
 fromhost_clean_p () {
+    ch-run "$1" -- /sbin/ldconfig -p | grep -F libsotest && return 1
     run fromhost_ls "$1"
     echo "$output"
     [[ $status -eq 0 ]]
@@ -20,7 +22,7 @@ fromhost_clean_p () {
 }
 
 fromhost_ls () {
-    find "$1" -xdev \( -name '*sotest*' -o -name 'ld.so.cache' \) -ls
+    find "$1" -xdev -name '*sotest*' -ls
 }
 
 @test 'ch-fromhost (Debian)' {
@@ -28,35 +30,33 @@ fromhost_ls () {
     prerequisites_ok debian9
     IMG=$IMGDIR/debian9
 
-    # --cmd
+    # inferred path is what we expect
+    [[ $(ch-fromhost --lib-path "$IMG") = /usr/local/lib ]]
+
+    # --file
     fromhost_clean "$IMG"
-    ch-fromhost -v --cmd 'cat sotest/files_inferrable.txt' "$IMG"
+    ch-fromhost -v --file sotest/files_inferrable.txt "$IMG"
     fromhost_ls "$IMG"
     test -f "$IMG/usr/bin/sotest"
     test -f "$IMG/usr/local/lib/libsotest.so.1.0"
     test -L "$IMG/usr/local/lib/libsotest.so.1"
-    ch-run "$IMG" -- /sbin/ldconfig -p | grep -F sotest
+    ch-run "$IMG" -- /sbin/ldconfig -p | grep -F libsotest
     ch-run "$IMG" -- sotest
     rm "$IMG/usr/bin/sotest"
     rm "$IMG/usr/local/lib/libsotest.so.1.0"
     rm "$IMG/usr/local/lib/libsotest.so.1"
-    rm "$IMG/etc/ld.so.cache"
+    ch-run -w "$IMG" -- /sbin/ldconfig
     fromhost_clean_p "$IMG"
 
-    # --cmd twice
-    ch-fromhost -v --cmd 'cat sotest/files_inferrable.txt' \
-                   --cmd 'cat sotest/files_inferrable.txt' "$IMG"
+    # --cmd
+    ch-fromhost -v --cmd 'cat sotest/files_inferrable.txt' "$IMG"
     ch-run "$IMG" -- sotest
     fromhost_clean "$IMG"
 
-    # --file
-    ch-fromhost -v --file sotest/files_inferrable.txt "$IMG"
-    ch-run "$IMG" -- sotest
-    fromhost_clean "$IMG"
-
-    # --file twice
-    ch-fromhost -v --file sotest/files_inferrable.txt \
-                   --file sotest/files_inferrable.txt "$IMG"
+    # --path
+    ch-fromhost -v --path sotest/bin/sotest \
+                   --path sotest/lib/libsotest.so.1.0 \
+                   "$IMG"
     ch-run "$IMG" -- sotest
     fromhost_clean "$IMG"
 
@@ -68,30 +68,28 @@ fromhost_ls () {
 
     # --dest
     ch-fromhost -v --file sotest/files_inferrable.txt \
-                   --file sotest/files_noninferrable.txt \
-                   --dest /mnt "$IMG"
+                   --dest /mnt "$IMG" \
+                   --path sotest/sotest.c
     ch-run "$IMG" -- sotest
     ch-run "$IMG" -- test -f /mnt/sotest.c
     fromhost_clean "$IMG"
 
-    # file that needs --dest but not specified
-    run ch-fromhost -v --file sotest/files_noninferrable.txt "$IMG"
-    echo "$output"
-    [[ $status -eq 1 ]]
-    [[ $output = *'no destination for: sotest/sotest.c'* ]]
-    fromhost_clean_p "$IMG"
+    # --dest overrides inference, but ldconfig still run
+    ch-fromhost -v --dest /lib \
+                   --file sotest/files_inferrable.txt \
+                   "$IMG"
+    ch-run "$IMG" -- /lib/sotest
+    fromhost_clean "$IMG"
 
-    # --no-infer
-    ch-run -w "$IMG" -- /sbin/ldconfig  # restore default cache
-    ch-fromhost -v --cmd 'echo sotest/bin/sotest' \
-                   --no-infer --dest /usr/bin "$IMG"
-    ch-fromhost -v --cmd 'echo sotest/lib/libsotest.so.1.0' \
-                   --no-infer --dest /usr/local/lib "$IMG"
-    fromhost_ls "$IMG"
-    ch-run "$IMG" -- /sbin/ldconfig -p | grep -F sotest || true
+    # --no-ldconfig
+    ch-fromhost -v --no-ldconfig --file sotest/files_inferrable.txt "$IMG"
+    test -f "$IMG/usr/bin/sotest"
+    test -f "$IMG/usr/local/lib/libsotest.so.1.0"
+    ! test -L "$IMG/usr/local/lib/libsotest.so.1"
+    ! ( ch-run "$IMG" -- /sbin/ldconfig -p | grep -F libsotest )
     run ch-run "$IMG" -- sotest
     echo "$output"
-    [[ $status -ne 0 ]]
+    [[ $status -eq 127 ]]
     [[ $output = *'libsotest.so.1: cannot open shared object file'* ]]
     fromhost_clean "$IMG"
 
@@ -99,6 +97,80 @@ fromhost_ls () {
     ch-fromhost --file sotest/files_inferrable.txt "$IMG"
     ch-run "$IMG" -- sotest
     fromhost_clean "$IMG"
+}
+
+@test 'ch-fromhost (CentOS)' {
+    scope full
+    prerequisites_ok centos7
+    IMG=$IMGDIR/centos7
+
+    fromhost_clean "$IMG"
+    ch-fromhost -v --file sotest/files_inferrable.txt "$IMG"
+    fromhost_ls "$IMG"
+    test -f "$IMG/usr/bin/sotest"
+    test -f "$IMG/lib/libsotest.so.1.0"
+    test -L "$IMG/lib/libsotest.so.1"
+    ch-run "$IMG" -- /sbin/ldconfig -p | grep -F libsotest
+    ch-run "$IMG" -- sotest
+    rm "$IMG/usr/bin/sotest"
+    rm "$IMG/lib/libsotest.so.1.0"
+    rm "$IMG/lib/libsotest.so.1"
+    rm "$IMG/etc/ld.so.cache"
+    fromhost_clean_p "$IMG"
+}
+
+@test 'ch-fromhost errors' {
+    scope standard
+    prerequisites_ok debian9
+    IMG=$IMGDIR/debian9
+
+    # no image
+    run ch-fromhost --path sotest/sotest.c
+    echo "$output"
+    [[ $status -eq 1 ]]
+    [[ $output = *'no image specified'* ]]
+    fromhost_clean_p "$IMG"
+
+    # image is not a directory
+    run ch-fromhost --path sotest/sotest.c /etc/motd
+    echo "$output"
+    [[ $status -eq 1 ]]
+    [[ $output = *'image not a directory: /etc/motd'* ]]
+    fromhost_clean_p "$IMG"
+
+    # two image arguments
+    run ch-fromhost --path sotest/sotest.c "$IMG" foo
+    echo "$output"
+    [[ $status -eq 1 ]]
+    [[ $output = *'duplicate image: foo'* ]]
+    fromhost_clean_p "$IMG"
+
+    # no files argument
+    run ch-fromhost "$IMG"
+    echo "$output"
+    [[ $status -eq 1 ]]
+    [[ $output = *'empty file list'* ]]
+    fromhost_clean_p "$IMG"
+
+    # file that needs --dest but not specified
+    run ch-fromhost -v --path sotest/sotest.c "$IMG"
+    echo "$output"
+    [[ $status -eq 1 ]]
+    [[ $output = *'no destination for: sotest/sotest.c'* ]]
+    fromhost_clean_p "$IMG"
+
+    # file with colon in name
+    run ch-fromhost -v --path 'foo:bar' "$IMG"
+    echo "$output"
+    [[ $status -eq 1 ]]
+    [[ $output = *"paths can't contain colon: foo:bar"* ]]
+    fromhost_clean_p "$IMG"
+    # file with newlines in name
+    run ch-fromhost -v --path $'foo\nbar' "$IMG"
+    echo "$output"
+    [[ $status -eq 1 ]]
+    [[ $output = *"no destination for: foo"* ]]
+    fromhost_clean_p "$IMG"
 
     # --cmd no argument
     run ch-fromhost "$IMG" --cmd
@@ -107,13 +179,13 @@ fromhost_ls () {
     [[ $output = *'--cmd must not be empty'* ]]
     fromhost_clean_p "$IMG"
     # --cmd empty
-    run ch-fromhost --cmd true
+    run ch-fromhost --cmd true "$IMG"
     echo "$output"
     [[ $status -eq 1 ]]
     [[ $output = *'empty file list'* ]]
     fromhost_clean_p "$IMG"
     # --cmd fails
-    run ch-fromhost --cmd false
+    run ch-fromhost --cmd false "$IMG"
     echo "$output"
     [[ $status -eq 1 ]]
     [[ $output = *'command failed: false'* ]]
@@ -139,11 +211,18 @@ fromhost_ls () {
     [[ $output = *'cannot read file: /doesnotexist'* ]]
     fromhost_clean_p "$IMG"
 
-    # neither --cmd nor --file
-    run ch-fromhost "$IMG"
+    # --path no argument
+    run ch-fromhost "$IMG" --path
     echo "$output"
     [[ $status -eq 1 ]]
-    [[ $output = *'empty file list'* ]]
+    [[ $output = *'--path must not be empty'* ]]
+    fromhost_clean_p "$IMG"
+    # --path does not exist
+    run ch-fromhost --dest /mnt --path /doesnotexist "$IMG"
+    echo "$output"
+    [[ $status -eq 1 ]]
+    [[ $output = *'No such file or directory'* ]]
+    [[ $output = *'cannot inject: /doesnotexist'* ]]
     fromhost_clean_p "$IMG"
 
     # --dest no argument
@@ -153,22 +232,19 @@ fromhost_ls () {
     [[ $output = *'--dest must not be empty'* ]]
     fromhost_clean_p "$IMG"
     # --dest not an absolute path
-    run ch-fromhost --file sotest/files_noninferrable.txt \
-                    --dest relative "$IMG"
+    run ch-fromhost --dest relative --path sotest/sotest.c "$IMG"
     echo "$output"
     [[ $status -eq 1 ]]
     [[ $output = *'not an absolute path: relative'* ]]
     fromhost_clean_p "$IMG"
     # --dest does not exist
-    run ch-fromhost --file sotest/files_noninferrable.txt \
-                    --dest /doesnotexist "$IMG"
+    run ch-fromhost --dest /doesnotexist --path sotest/sotest.c "$IMG"
     echo "$output"
     [[ $status -eq 1 ]]
     [[ $output = *'not a directory:'* ]]
     fromhost_clean_p "$IMG"
     # --dest is not a directory
-    run ch-fromhost --file sotest/files_noninferrable.txt \
-                    --dest /bin/sh "$IMG"
+    run ch-fromhost --dest /bin/sh --file sotest/sotest.c "$IMG"
     echo "$output"
     [[ $status -eq 1 ]]
     [[ $output = *'not a directory:'* ]]
@@ -184,28 +260,26 @@ fromhost_ls () {
     run ch-fromhost --file sotest/files_inferrable.txt "$IMG" "$IMG"
     echo "$output"
     [[ $status -eq 1 ]]
-    [[ $output = *'duplicate image path'* ]]
+    [[ $output = *'duplicate image'* ]]
     fromhost_clean_p "$IMG"
 }
 
-@test 'ch-fromhost (CentOS)' {
+@test 'ch-fromhost --cray-mpi not on a Cray' {
     scope full
-    prerequisites_ok centos7
-    IMG=$IMGDIR/centos7
+    [[ $CHTEST_CRAY ]] && skip 'host is a Cray'
+    run ch-fromhost --cray-mpi "$CHTEST_IMG"
+    echo "$output"
+    [[ $status -eq 1 ]]
+    [[ $output = *'are you on a Cray?'* ]]
+}
 
-    fromhost_clean "$IMG"
-    ch-fromhost -v --file sotest/files_inferrable.txt "$IMG"
-    fromhost_ls "$IMG"
-    test -f "$IMG/usr/bin/sotest"
-    test -f "$IMG/lib/libsotest.so.1.0"
-    test -L "$IMG/lib/libsotest.so.1"
-    ch-run "$IMG" -- /sbin/ldconfig -p | grep -F sotest
-    ch-run "$IMG" -- sotest
-    rm "$IMG/usr/bin/sotest"
-    rm "$IMG/lib/libsotest.so.1.0"
-    rm "$IMG/lib/libsotest.so.1"
-    rm "$IMG/etc/ld.so.cache"
-    fromhost_clean_p "$IMG"
+@test 'ch-fromhost --cray-mpi with no MPI installed' {
+    scope full
+    [[ $CHTEST_CRAY ]] || skip 'host is not a Cray'
+    run ch-fromhost --cray-mpi "$CHTEST_IMG"
+    echo "$output"
+    [[ $status -eq 1 ]]
+    [[ $output = *"can't find MPI in image"* ]]
 }
 
 @test 'ch-fromhost --nvidia with GPU' {
